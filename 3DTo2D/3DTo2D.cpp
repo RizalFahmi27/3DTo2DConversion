@@ -33,8 +33,15 @@ static int DRAW_TYPE_REALTIME = 0;
 static int WINDOW_HEIGHT = 640;
 static int WINDOW_WIDTH = 640;
 static bool is_capturing = false;
+static bool is_sobel_enabled = false;
+static bool is_canny_enabled = false;
+static bool is_lbp_enabled = false;
+static bool is_export_enabled = false;
+static bool is_write_enabled = false;
 
-static int n_for_open_gl = 0;
+static int global_n = 0;
+static int global_lbp_radius = 0;
+static int flobal_lbp_neighbors = 0;
 
 static int sudut = 0;
 static int sudut2 = 0;
@@ -909,6 +916,69 @@ object3D_color_t readOffFile() {
 	
 }
 
+
+void writePNGFromExport(Mat image, int n, string fileName) {
+	int whichFile = off;
+	for (int i = 0; i < n; i++) {
+		cout << "Writing png into file " + fileName + "_" + to_string(i + 1) + ".png" "\n";
+		imwrite(BASE_OUTPUT_PATH + fileName + "_" + to_string(i + 1) + ".png", image);
+	}
+}
+
+Mat getSobel(Mat originalMat) {
+
+
+	Mat grey;
+
+	cvtColor(originalMat, grey, CV_BGR2GRAY);
+
+	Mat sobelX;
+	Sobel(grey, sobelX, CV_32F, 1, 0);
+
+	double minVal, maxVal;
+	minMaxLoc(sobelX, &minVal, &maxVal);
+
+	Mat drawSobelMat;
+	sobelX.convertTo(drawSobelMat, CV_8U, 255.0 / (maxVal - minVal), -minVal*255.0 / (maxVal - minVal));
+
+
+	return drawSobelMat;
+
+}
+
+Mat getCanny(Mat originalMat) {
+
+
+	int edgeThresh = 1;
+	int lowThreshold = 0;
+	int const max_lowThreshold = 100;
+	int ratio = 3;
+	int kernel_size = 3;
+	char* windows_name = "3D Object By Rizal Fahmi";
+
+	Mat original_gray;
+	Mat dst, detected_edges;
+
+	dst.create(originalMat.size(), originalMat.type());
+	cvtColor(originalMat, original_gray, CV_BGR2GRAY);
+
+	blur(original_gray, detected_edges, Size(3, 3));
+
+	Canny(detected_edges, detected_edges, lowThreshold, lowThreshold*ratio, kernel_size);
+
+	dst = Scalar::all(0);
+
+	originalMat.copyTo(dst, detected_edges);
+
+	/*for (int i = 0; i < n; i++)
+	imwrite(BASE_PATH + "/Canny/" + "canny_" + to_string((i + 1)) + ".png", dst);*/
+
+	//Canny(detected_edges,detected_edges)
+
+	return dst;
+
+}
+
 Mat captureWindow() {
 	int width = glutGet(GLUT_WINDOW_WIDTH);
 	int height = glutGet(GLUT_WINDOW_HEIGHT);
@@ -923,13 +993,79 @@ Mat captureWindow() {
 
 	flip(tempImage, temp, 0);
 
-	for (int i = 0; i < n_for_open_gl; i++) {
+	/*for (int i = 0; i < global_n; i++) {
 		string fileName = "/2D PNG/" + to_string(off) + "_off_" + to_string(i + 1) + ".png";
 		cout << "Writing png into file " + fileName + "\n";
 		imwrite(BASE_OUTPUT_PATH + fileName, temp);
-	}
+	}*/
 
 	return temp;
+}
+
+
+void writeFeature(Mat dst, string path) {
+	//ofstream fout(BASE_OUTPUT_PATH + "/LBP/feature/features.txt");
+	ofstream fout(BASE_OUTPUT_PATH +  path);
+	int unsigned *ptr;
+	ptr = (unsigned int *)dst.data;
+	cout << "Writing features into file " + path << endl;
+	for (int i = 0; i < (dst.rows); i++) {
+		for (int j = 0; j < (dst.cols); j++) {
+			fout << *ptr << " ";
+			ptr++;
+		}
+		fout << endl;
+	}
+
+	fout.close();
+}
+
+template <typename _Tp>
+Mat OLBP_(Mat originalMat, int radius, int neighbors, int n) {
+
+	Mat dst;
+
+	neighbors = max(min(neighbors, 31), 1);
+	dst = Mat::zeros(originalMat.rows - 2 * radius, originalMat.cols - 2 * radius, CV_32SC1);
+
+	for (int n = 0; n < neighbors; n++) {
+		// sample points
+		float x = static_cast<float>(radius) * cos(2.0*M_PI*n / static_cast<float>(neighbors));
+		float y = static_cast<float>(radius) * -sin(2.0*M_PI*n / static_cast<float>(neighbors));
+
+		// relative indices
+		int fx = static_cast<int>(floor(x));
+		int fy = static_cast<int>(floor(y));
+		int cx = static_cast<int>(ceil(x));
+		int cy = static_cast<int>(ceil(y));
+
+		// fractional part
+		float ty = y - fy;
+		float tx = x - fx;
+
+		// set interpolation weights
+		float w1 = (1 - tx) * (1 - ty);
+		float w2 = tx *(1 - ty);
+		float w3 = (1 - tx) * ty;
+		float w4 = tx * ty;
+
+		// iterate obtained data
+		for (int i = radius; i < originalMat.rows - radius; i++) {
+			for (int j = radius; j < originalMat.cols - radius; j++) {
+				float t = w1*originalMat.at<_Tp>(i + fy, j + fx) + w2*originalMat.at<_Tp>(i + fy, j + cx) + w3*originalMat.at<_Tp>(i + cy, j + fx) + w4*originalMat.at<_Tp>(i + cy, j + cx);
+				// add tolerance to destinated mat, floating point need precise value
+				dst.at<unsigned int>(i - radius, j - radius) += ((t>originalMat.at<_Tp>(i, j)) && (abs(t - originalMat.at<_Tp>(i, j)) > numeric_limits<float>::epsilon())) << n;
+
+			}
+		}
+
+
+		
+
+	}
+
+	return dst;
+
 }
 
 void userdraw(void) {
@@ -951,9 +1087,43 @@ void userdraw(void) {
 	//drawPlanetRevolution(200,40);
 	//drawBattery();
 	//drawPrism();
+
+	Mat capturedMat;
+
+
 	drawOff(readOffFile(), 0.0, DRAW_TYPE_REALTIME);
-	if (is_capturing)
-		captureWindow();
+
+	if (is_capturing) {
+		string fileName = "";
+		string fileFeatureName = "";
+		capturedMat = captureWindow();
+		if (is_export_enabled) {
+			fileName = "/2D PNG/" + to_string(off) + "_off_";
+		}
+		if (is_sobel_enabled) {
+			capturedMat = getSobel(capturedMat);
+			fileName = "/Sobel/" + to_string(off) + "_off_sobel";
+		}
+		if (is_canny_enabled) {
+			capturedMat = getCanny(capturedMat);
+			fileName = "/Canny/" + to_string(off) + "_off_canny";
+		}
+		if (is_lbp_enabled) {
+			capturedMat = OLBP_<float>(capturedMat, global_lbp_radius, flobal_lbp_neighbors, global_n);
+			fileName = "/LBP/" + to_string(off) + "_off_lbp";
+			fileFeatureName = "/LBP/feature/features.txt";
+			writeFeature(capturedMat, fileFeatureName);
+		}
+
+		writePNGFromExport(capturedMat, global_n, fileName);
+
+		is_capturing = false;
+		is_export_enabled = false;
+		is_sobel_enabled = false;
+		is_canny_enabled = false;
+		is_lbp_enabled = false;
+	}
+		
 
 }
 
@@ -961,6 +1131,11 @@ void keyboardInput(unsigned char key, int x, int y) {
 	if (key == 13) {
 		//printf("return is pressed");
 		glutSetOption(GLUT_ACTION_ON_WINDOW_CLOSE, GLUT_ACTION_CONTINUE_EXECUTION);
+		is_capturing = false;
+		is_export_enabled = false;
+		is_sobel_enabled = false;
+		is_canny_enabled = false;
+		is_lbp_enabled = false;
 		glutLeaveMainLoop();
 	}
 }
@@ -1000,141 +1175,18 @@ void initOpenGLWindow() {
 void openOpenGLAndcaptureWindow() {
 
 	is_capturing = true;
+	is_export_enabled = true;
 
 	initOpenGLWindow();
 
-
 }
 
-void getSobel(int n) {
-
-	Mat originalMat = captureWindow();
-	Mat grey;
-
-	cvtColor(originalMat, grey, CV_BGR2GRAY);
-
-	Mat sobelX;
-	Sobel(grey, sobelX, CV_32F, 1, 0);
-
-	double minVal, maxVal;
-	minMaxLoc(sobelX, &minVal, &maxVal);
-
-	Mat drawSobelMat;
-	sobelX.convertTo(drawSobelMat, CV_8U, 255.0 / (maxVal - minVal), -minVal*255.0 / (maxVal - minVal));
-
-	for (int i = 0; i < n; i++)
-		imwrite(BASE_PATH + "/Sobel/" + "sobel_" + to_string((i + 1)) + ".png", drawSobelMat);
-
-
-}
-
-
-
-Mat getCanny(int n) {
-
-	Mat originalMat = captureWindow();
-
-	int edgeThresh = 1;
-	int lowThreshold = 0;
-	int const max_lowThreshold = 100;
-	int ratio = 3;
-	int kernel_size = 3;
-	char* windows_name = "3D Object By Rizal Fahmi";
-
-	Mat original_gray;
-	Mat dst, detected_edges;
-
-	dst.create(originalMat.size(), originalMat.type());
-	cvtColor(originalMat, original_gray, CV_BGR2GRAY);
-
-	blur(original_gray, detected_edges, Size(3, 3));
-
-	Canny(detected_edges, detected_edges, lowThreshold, lowThreshold*ratio, kernel_size);
-
-	dst = Scalar::all(0);
-
-	originalMat.copyTo(dst, detected_edges);
-	imwrite("canny.png", dst);
-
-	for (int i = 0; i < n; i++)
-		imwrite(BASE_PATH + "/Canny/" + "canny_" + to_string((i + 1)) + ".png", dst);
-
-
-	//Canny(detected_edges,detected_edges)
-
-	return dst;
-
-}
-
-void writeFeature(Mat dst) {
-	ofstream fout(BASE_PATH + "/LBP/lbp.txt");
-	int unsigned *ptr;
-	ptr = (unsigned int *)dst.data;
-
-	for (int i = 0; i < (dst.rows); i++) {
-		for (int j = 0; j < (dst.cols); j++) {
-			fout << *ptr << " ";
-			ptr++;
-		}
-		fout << endl;
-	}
-
-	fout.close();
-}
-
-template <typename _Tp>
-void OLBP_(int radius, int neighbors, int n) {
-	Mat& originalMat = captureWindow();
-
-	Mat dst;
-
-	neighbors = max(min(neighbors, 31), 1);
-	dst = Mat::zeros(originalMat.rows - 2 * radius, originalMat.cols - 2 * radius, CV_32SC1);
-
-	for (int n = 0; n < neighbors; n++) {
-		// sample points
-		float x = static_cast<float>(radius) * cos(2.0*M_PI*n / static_cast<float>(neighbors));
-		float y = static_cast<float>(radius) * -sin(2.0*M_PI*n / static_cast<float>(neighbors));
-
-		// relative indices
-		int fx = static_cast<int>(floor(x));
-		int fy = static_cast<int>(floor(y));
-		int cx = static_cast<int>(ceil(x));
-		int cy = static_cast<int>(ceil(y));
-
-		// fractional part
-		float ty = y - fy;
-		float tx = x - fx;
-
-		// set interpolation weights
-		float w1 = (1 - tx) * (1 - ty);
-		float w2 = tx *(1 - ty);
-		float w3 = (1 - tx) * ty;
-		float w4 = tx * ty;
-
-		// iterate obtained data
-		for (int i = radius; i < originalMat.rows - radius; i++) {
-			for (int j = radius; j < originalMat.cols - radius; j++) {
-				float t = w1*originalMat.at<_Tp>(i + fy, j + fx) + w2*originalMat.at<_Tp>(i + fy, j + cx) + w3*originalMat.at<_Tp>(i + cy, j + fx) + w4*originalMat.at<_Tp>(i + cy, j + cx);
-				// add tolerance to destinated mat, floating point need precise value
-				dst.at<unsigned int>(i - radius, j - radius) += ((t>originalMat.at<_Tp>(i, j)) && (abs(t - originalMat.at<_Tp>(i, j)) > numeric_limits<float>::epsilon())) << n;
-
-			}
-		}
-
-
-		writeFeature(dst);
-		for (int i = 0; i < n; i++)
-			imwrite(BASE_PATH + "/LBP/" + "lbp_" + to_string((i + 1)) + ".png", dst);
-	}
-
-}
 
 /*
 	Export file onto png format
 */
 
-void exportFile(float tetha, int n) {
+Mat exportFile(float tetha) {
 	int whichFile = off;
 	object3D_color_t ob;
 	ob = readOffFile();
@@ -1201,10 +1253,10 @@ void exportFile(float tetha, int n) {
 			for (int i = 0; i<3; i++) {
 				//data.push_back(Point(P[i].x, P[i].y));
 				points[0][i] = Point(pNormal[i].x*(-280)+300, pNormal[i].y*280+300);
-				float x = (float)(pNormal[i].x*(-280)+300);
-				float y = (float)(pNormal[i].y*280+300);
+				//float x = (float)(pNormal[i].x*(-280)+300);
+				//float y = (float)(pNormal[i].y*280+300);
 				//image.at<Vec3b>(Point(x, y)) = color;
-				printf("point %d : %f, %f\n", i, x, y);
+				//printf("point %d : %f, %f\n", i, x, y);
 			}
 
 			const Point* ppt[1] = { points[0] };
@@ -1223,12 +1275,58 @@ void exportFile(float tetha, int n) {
 		}
 	}*/
 
-	for (int i = 0; i < n; i++) {
-		string fileName = "/2D PNG/" + to_string(whichFile) + "_off_" + to_string(i+1) + ".png";
-		cout << "Writing png into file " + fileName + "\n";
-		imwrite(BASE_OUTPUT_PATH + fileName , image);
+	return image;
+}
+
+void processAllOff(float tetha, int radius, int neighbors, int n) {
+	ifstream ifs2(BASE_PATH + "/read_off.txt");
+	
+	if (!ifs2) {
+		cout << "Cannot open file " + BASE_PATH + "/read_off.txt";
+		exit(1);
+	}
+
+	Mat image, imageSobel, imageCanny, imageLBP;
+	char str[255];
+	char *next_token = NULL;
+	char delims[] = {'/','.'};
+	char *tok;
+	char str_off[255];
+	int x = 0;
+	string fileNameExport, fileNameSobel, fileNameCanny, fileNameLBP, fileFeatureName;
+
+	while (!ifs2.eof()) {
+		ifs2.getline(str, 255);
+		tok = strtok_s(str, delims, &next_token);
+		x = 0;
+		while (tok && x < 2) {
+			if (x == 1) {
+				strcpy(str_off, tok);
+				off = atoi(str_off);
+				cout << "Processing file " + to_string(off) + ".off" << endl;
+				image = exportFile(tetha);
+				fileNameExport = "/All Off/2D PNG/" + to_string(off) + "_off";
+				writePNGFromExport(image, n, fileNameExport);
+				imageSobel = getSobel(image);
+				fileNameSobel = "/All Off/Sobel/" + to_string(off) + "_off_sobel";
+				writePNGFromExport(imageSobel, n, fileNameSobel);
+				imageCanny = getCanny(image);
+				fileNameCanny = "/All Off/Canny/" + to_string(off) + "_off_canny";
+				writePNGFromExport(imageCanny, n, fileNameCanny);
+				imageLBP = OLBP_<float>(image, radius, neighbors, n);
+				fileNameLBP = "/All Off/LBP/" + to_string(off) + "_off_lbp";
+				writePNGFromExport(imageLBP, n, fileNameLBP);
+				fileFeatureName = "/All Off/LBP/features/features_" + to_string(off) + "_off.txt";
+				writeFeature(imageLBP, fileFeatureName);
+				
+			}
+			tok = strtok_s(NULL, delims, &next_token);
+			x++;
+		}
 	}
 }
+
+
 
 void readOff(){
 
@@ -1248,8 +1346,8 @@ void readOff(){
 
 		cout << "1. Tampilkan object 3D dari file off\n";
 		cout << "2. Eksport object 3D ke gambar PNG\n";
-		cout << "3. Canny\n";
-		cout << "4. Sobel\n";
+		cout << "3. Sobel\n";
+		cout << "4. Canny\n";
 		cout << "5. LBP\n";
 		cout << "6. Proses semua file off\n";
 		cout << "7. Keluar\n";
@@ -1275,45 +1373,205 @@ void readOff(){
 			cout << "Masukkan metode : ";
 			cin >> metode;
 
-			if (metode == 0) {
+			if (metode == 1) {
 				cout << "Masukkan tetha : ";
 				cin >> tetha;
 
 				cout << "Masukkan jumlah copy gambar : ";
 				cin >> n;
-				exportFile(tetha, n);
+				Mat image = exportFile(tetha);
+				string fileName = "/2D PNG/" + to_string(off) + "_off_";
+				writePNGFromExport(image, n, fileName);
 			}
-			else if (metode == 1) {
+			else if (metode == 2) {
 				cout << "Masukkan jumlah copy gambar : ";
-				cin >> n_for_open_gl;
+				cin >> global_n;
 				openOpenGLAndcaptureWindow();
 			}
 			
 		}
 
-		cout << "Masukkan tetha : ";
-		getline(cin, strtetha);
-		stringstream(strtetha) >> tetha;
+		if (pil == 3) {
+			float tetha = 0.0;
+			int n = 1;
+			int metode = 0;
+
+			cout << "Masukkan file off ke berapa yang ingin dieksport dengan Sobel : ";
+			cin >> off;
+
+			cout << "Masukkan metode konversi : ";
+			cin >> metode;
+
+			if (metode == 1) {
+				cout << "Masukkan tetha : ";
+				cin >> tetha;
+
+				cout << "Masukkan jumlah copy gambar : ";
+				cin >> n;
+				Mat image = exportFile(tetha);
+				image = getSobel(image);
+				string fileName = "/Sobel/" + to_string(off) + "_off_sobel";
+				writePNGFromExport(image, n, fileName);
+
+			}
+			else if (metode == 2) {
+				cout << "Masukkan jumlah copy gambar : ";
+				cin >> global_n;
+
+				is_sobel_enabled = true;
+
+				openOpenGLAndcaptureWindow();
+			}
+
+		}
+
+		if (pil == 4) {
+			float tetha = 0.0;
+			int n = 1;
+			int metode = 0;
+
+			cout << "Masukkan file off ke berapa yang ingin dieksport dengan Canny : ";
+			cin >> off;
+
+			cout << "Masukkan metode konversi : ";
+			cin >> metode;
+
+			if (metode == 1) {
+				cout << "Masukkan tetha : ";
+				cin >> tetha;
+
+				cout << "Masukkan jumlah copy gambar : ";
+				cin >> n;
+				Mat image = exportFile(tetha);
+				image = getCanny(image);
+				string fileName = "/Canny/" + to_string(off) + "_off_canny";
+				writePNGFromExport(image, n, fileName);
+
+			}
+			else if (metode == 2) {
+				cout << "Masukkan jumlah copy gambar : ";
+				cin >> global_n;
+
+				is_canny_enabled = true;
+
+				openOpenGLAndcaptureWindow();
+			}
+
+		}
+
+		if (pil == 5) {
+			float tetha = 0.0;
+			int n = 1;
+			int metode = 0;
+			int radius = 0;
+			int neighbors = 0;
+
+			cout << "Masukkan file off ke berapa yang ingin dieksport dengan LBP : ";
+			cin >> off;
 
 
-		cout << "Masukkan jumlah output sobel yang ingin dibuat : ";
-		cin >> numOfSobel;
+			cout << "Masukkan metode konversi : ";
+			cin >> metode;
 
-		cout << "Masukkan jumlah output canny yang ingin dibuat : ";
-		cin >> numOfCanny;
 
-		cout << "Masukkan jumlah output LBP yang ingin dibuat : ";
-		cin >> numOfLBP;
+			if (metode == 1) {
+				cout << "Masukkan tetha : ";
+				cin >> tetha;
 
-		cout << "Silahkan tunggu......";
+				cout << "Masukkan jumlah copy gambar : ";
+				cin >> n;
+
+				cout << "Masukkan radius : ";
+				cin >> radius;
+
+				cout << "Masukkan neighbors : ";
+				cin >> neighbors;
+
+
+				Mat image = exportFile(tetha);
+				image = OLBP_<float>(image, radius, neighbors, n);
+				string fileName = "/LBP/" + to_string(off) + "_off_lbp";
+				writePNGFromExport(image, n, fileName);
+				string fileFeatureName = "/LBP/feature/features.txt";
+				writeFeature(image, fileFeatureName);
+
+			}
+			else if (metode == 2) {
+				cout << "Masukkan jumlah copy gambar : ";
+				cin >> global_n;
+
+
+				cout << "Masukkan radius : ";
+				cin >> global_lbp_radius;
+
+				cout << "Masukkan neighbors : ";
+				cin >> flobal_lbp_neighbors;
+
+				is_lbp_enabled = true;
+
+				openOpenGLAndcaptureWindow();
+			}
+
+		}
+
+		if (pil == 6) {
+			float tetha = 0.0;
+			int n = 1;
+			int metode = 0;
+			int radius = 0;
+			int neighbors = 0;
+
+			/*cout << "Masukkan metode konversi : ";
+			cin >> metode;
+
+
+			if (metode == 1) {*/
+				cout << "Masukkan tetha : ";
+				cin >> tetha;
+
+				cout << "Masukkan jumlah copy gambar : ";
+				cin >> n;
+
+				cout << "Masukkan radius untuk LBP : ";
+				cin >> radius;
+
+				cout << "Masukkan neighbors LBP : ";
+				cin >> neighbors;
+
+
+				processAllOff(tetha,radius,neighbors,n);
+
+			/*}
+			else if (metode == 2) {
+				cout << "Masukkan jumlah copy gambar : ";
+				cin >> global_n;
+
+
+				cout << "Masukkan radius untuk LBP : ";
+				cin >> global_lbp_radius;
+
+				cout << "Masukkan neighbors untuk LBP : ";
+				cin >> flobal_lbp_neighbors;
+
+				is_lbp_enabled = true;
+
+				openOpenGLAndcaptureWindow();
+			}*/
+
+		}
+
+		if (pil == 7) {
+			exit(0);
+		}
+
 
 
 		//setBackground();
 
 
-		getSobel(numOfSobel);
+		/*getSobel(numOfSobel);
 		getCanny(numOfCanny);
-		OLBP_<float>(1, 8, numOfLBP);
+		OLBP_<float>(1, 8, numOfLBP);*/
 	}
 }
 
